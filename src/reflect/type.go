@@ -423,8 +423,8 @@ type rawType struct {
 	meta uint8 // metadata byte, contains kind and flags (see constants above)
 }
 
-// All types that have an element type: named, chan, slice, array, map (but not
-// pointer because it doesn't have ptrTo).
+// All types that have an element type: named, chan, slice, array, map, interface
+// (but not pointer because it doesn't have ptrTo).
 type elemType struct {
 	rawType
 	numMethod uint16
@@ -436,6 +436,12 @@ type ptrType struct {
 	rawType
 	numMethod uint16
 	elem      *rawType
+}
+
+type interfaceType struct {
+	rawType
+	ptrTo *rawType
+	// TODO: methods
 }
 
 type arrayType struct {
@@ -970,7 +976,7 @@ func (t *rawType) FieldAlign() int {
 // AssignableTo returns whether a value of type t can be assigned to a variable
 // of type u.
 func (t *rawType) AssignableTo(u Type) bool {
-	if t == u.(*rawType) {
+	if u := u.(*rawType); t == u || t.underlying() == u || t == u.underlying() {
 		return true
 	}
 
@@ -1039,6 +1045,9 @@ func (t *rawType) NumMethod() int {
 		return int((*ptrType)(unsafe.Pointer(t)).numMethod)
 	case Struct:
 		return int((*structType)(unsafe.Pointer(t)).numMethod)
+	case Interface:
+		//FIXME: Use len(methods)
+		return (*interfaceType)(unsafe.Pointer(t)).ptrTo.NumMethod()
 	}
 
 	// Other types have no methods attached.  Note we don't panic here.

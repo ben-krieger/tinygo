@@ -1,6 +1,7 @@
 package reflect_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	. "reflect"
 	"sort"
@@ -599,6 +600,29 @@ func TestAssignableTo(t *testing.T) {
 	if got, want := refa.Interface().(int), 4; got != want {
 		t.Errorf("AssignableTo / Set failed, got %v, want %v", got, want)
 	}
+
+	b := []byte{0x01, 0x02}
+	refb := ValueOf(&b).Elem()
+	refb.Set(ValueOf([]byte{0x02, 0x03}))
+	if got, want := refb.Interface().([]byte), []byte{0x02, 0x03}; !bytes.Equal(got, want) {
+		t.Errorf("AssignableTo / Set failed, got %v, want %v", got, want)
+	}
+
+	type bstr []byte
+
+	c := bstr{0x01, 0x02}
+	refc := ValueOf(&c).Elem()
+	refc.Set(ValueOf([]byte{0x02, 0x03}))
+	if got, want := refb.Interface().([]byte), []byte{0x02, 0x03}; !bytes.Equal(got, want) {
+		t.Errorf("AssignableTo / Set failed, got %v, want %v", got, want)
+	}
+
+	d := []byte{0x01, 0x02}
+	refd := ValueOf(&d).Elem()
+	refd.Set(ValueOf(bstr{0x02, 0x03}))
+	if got, want := refb.Interface().([]byte), []byte{0x02, 0x03}; !bytes.Equal(got, want) {
+		t.Errorf("AssignableTo / Set failed, got %v, want %v", got, want)
+	}
 }
 
 func TestConvert(t *testing.T) {
@@ -621,6 +645,45 @@ func TestConvert(t *testing.T) {
 	c = v.Convert(TypeOf(namedString("")))
 	if c.Type().Kind() != String || c.Type().Name() != "namedString" {
 		t.Errorf("Convert(string -> namedString")
+	}
+}
+
+func TestClearSlice(t *testing.T) {
+	type stringSlice []string
+	for _, test := range []struct {
+		slice  any
+		expect any
+	}{
+		{
+			slice:  []bool{true, false, true},
+			expect: []bool{false, false, false},
+		},
+		{
+			slice:  []byte{0x00, 0x01, 0x02, 0x03},
+			expect: []byte{0x00, 0x00, 0x00, 0x00},
+		},
+		{
+			slice:  [][]int{[]int{2, 1}, []int{3}, []int{}},
+			expect: [][]int{nil, nil, nil},
+		},
+		{
+			slice:  []stringSlice{stringSlice{"hello", "world"}, stringSlice{}, stringSlice{"goodbye"}},
+			expect: []stringSlice{nil, nil, nil},
+		},
+	} {
+		v := ValueOf(test.slice)
+		expectLen, expectCap := v.Len(), v.Cap()
+
+		v.Clear()
+		if len := v.Len(); len != expectLen {
+			t.Errorf("Clear(slice) altered len, got %d, expected %d", len, expectLen)
+		}
+		if cap := v.Cap(); cap != expectCap {
+			t.Errorf("Clear(slice) altered cap, got %d, expected %d", cap, expectCap)
+		}
+		if !DeepEqual(test.slice, test.expect) {
+			t.Errorf("Clear(slice) got %v, expected %v", test.slice, test.expect)
+		}
 	}
 }
 

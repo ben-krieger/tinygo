@@ -689,6 +689,27 @@ func (v Value) Cap() int {
 	}
 }
 
+//go:linkname mapclear runtime.hashmapClear
+func mapclear(p unsafe.Pointer)
+
+// Clear clears the contents of a map or zeros the contents of a slice
+//
+// It panics if v's Kind is not Map or Slice.
+func (v Value) Clear() {
+	switch v.typecode.Kind() {
+	case Map:
+		mapclear(v.pointer())
+	case Slice:
+		hdr := (*sliceHeader)(v.value)
+		elemSize := v.typecode.underlying().elem().Size()
+		for i := uintptr(0); i < hdr.len; i++ {
+			memzero(unsafe.Add(hdr.data, i*elemSize), elemSize)
+		}
+	default:
+		panic(&ValueError{Method: "Clear", Kind: v.Kind()})
+	}
+}
+
 // NumField returns the number of fields of this struct. It panics for other
 // value types.
 func (v Value) NumField() int {
@@ -888,6 +909,9 @@ func (v Value) Index(i int) Value {
 }
 
 func (v Value) NumMethod() int {
+	if v.typecode == nil {
+		panic(&ValueError{Method: "reflect.Value.NumMethod", Kind: Invalid})
+	}
 	return v.typecode.NumMethod()
 }
 
@@ -1240,7 +1264,9 @@ func (v Value) OverflowUint(x uint64) bool {
 }
 
 func (v Value) CanConvert(t Type) bool {
-	panic("unimplemented: (reflect.Value).CanConvert()")
+	// TODO: Optimize this to not actually perform a conversion
+	_, ok := convertOp(v, t)
+	return ok
 }
 
 func (v Value) Convert(t Type) Value {
@@ -1271,6 +1297,8 @@ func convertOp(src Value, typ Type) (Value, bool) {
 			return cvtIntFloat(src, rtype), true
 		case String:
 			return cvtIntString(src, rtype), true
+		case Interface:
+			return cvtToInterface(src, rtype)
 		}
 
 	case Uint, Uint8, Uint16, Uint32, Uint64, Uintptr:
@@ -1281,6 +1309,8 @@ func convertOp(src Value, typ Type) (Value, bool) {
 			return cvtUintFloat(src, rtype), true
 		case String:
 			return cvtUintString(src, rtype), true
+		case Interface:
+			return cvtToInterface(src, rtype)
 		}
 
 	case Float32, Float64:
@@ -1291,6 +1321,8 @@ func convertOp(src Value, typ Type) (Value, bool) {
 			return cvtFloatUint(src, rtype), true
 		case Float32, Float64:
 			return cvtFloat(src, rtype), true
+		case Interface:
+			return cvtToInterface(src, rtype)
 		}
 
 		/*
@@ -1302,25 +1334,40 @@ func convertOp(src Value, typ Type) (Value, bool) {
 		*/
 
 	case Slice:
-		if typ.Kind() == String && !src.typecode.elem().isNamed() {
-			rtype := typ.(*rawType)
-
-			switch src.Type().Elem().Kind() {
-			case Uint8:
-				return cvtBytesString(src, rtype), true
-			case Int32:
-				return cvtRunesString(src, rtype), true
+		switch rtype := typ.(*rawType); rtype.Kind() {
+		case Array: // TODO: Also allow slice -> *array
+			if src.typecode.elem() == rtype.elem() && rtype.Len() <= src.Len() {
+				return Value{
+					typecode: SliceOf(src.typecode.elem()).(*rawType),
+					value:    (*sliceHeader)(src.value).data,
+					flags:    src.flags,
+				}, true
+			}
+		case Interface:
+			return cvtToInterface(src, rtype)
+		case String:
+			if !src.typecode.elem().isNamed() {
+				switch src.Type().Elem().Kind() {
+				case Uint8:
+					return cvtBytesString(src, rtype), true
+				case Int32:
+					return cvtRunesString(src, rtype), true
+				}
 			}
 		}
 
 	case String:
-		rtype := typ.(*rawType)
-		if typ.Kind() == Slice && !rtype.elem().isNamed() {
-			switch typ.Elem().Kind() {
-			case Uint8:
-				return cvtStringBytes(src, rtype), true
-			case Int32:
-				return cvtStringRunes(src, rtype), true
+		switch rtype := typ.(*rawType); rtype.Kind() {
+		case Interface:
+			return cvtToInterface(src, rtype)
+		case Slice:
+			if !rtype.elem().isNamed() {
+				switch typ.Elem().Kind() {
+				case Uint8:
+					return cvtStringBytes(src, rtype), true
+				case Int32:
+					return cvtStringRunes(src, rtype), true
+				}
 			}
 		}
 	}
@@ -1331,6 +1378,20 @@ func convertOp(src Value, typ Type) (Value, bool) {
 	// Interface <-> Type conversions
 
 	return Value{}, false
+}
+
+func cvtToInterface(v Value, t *rawType) (Value, bool) {
+	// Only convert to empty interface
+	if t.NumMethod() > 0 {
+		return Value{}, false
+	}
+
+	iface := composeInterface(unsafe.Pointer(v.typecode), v.value)
+	return Value{
+		typecode: t,
+		value:    unsafe.Pointer(&iface),
+		flags:    valueFlagExported,
+	}, true
 }
 
 func cvtInt(v Value, t *rawType) Value {
